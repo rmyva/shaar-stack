@@ -29,6 +29,14 @@ For the exact path package identity libp2p-dns 0.45.0 with MIT declaration, the 
 
 No local tests or project execution were performed. CI must run the notice regressions and the full license action on Ubuntu and Windows, inspect the selected evidence and preparation receipts for the actual prepared DNS tree, and confirm report/upload success and failure propagation. The reported original CI failure was not independently observed; the available run had not reached the license action when inspected.
 
+## Fork CI and additional reviewed headers (2026-10-29)
+
+Fork run 40835246695 logged a successful cargo-deny check, then failed selected evidence collection for the prepared libp2p-kad 0.49.0 path package; report generation subsequently reported the missing evidence JSON. This is an observed failure, not a successful end-to-end run.
+
+The eight crate archives named in the CI preparation workflow were read as data over the network and their SHA-256 values matched the preparation pins (the backend pins are in its lock/recipe). Kademlia, DNS, relay and swarm have no license-named archive entries; their `src/lib.rs` begins with a complete commented MIT notice. Kademlia shares DNS's 1124-byte header and digest. Relay's header is 1157 bytes, SHA-256 `dcb5d7853eed00c1c60b6a4ebe37222ca3dcc2409cb34c3dcc4d938cc50b4a87`; swarm's is 1124 bytes, SHA-256 `807a93f76384e2cd0d26a180975c1064a1365a5ec3c9ea207bf813a188a1e6f4`. Resolver, iroh, noq and noq-proto archives contain license-named files, so no special header rule was added for them.
+
+The preparation recipes indicate Kademlia leaves `src/lib.rs` unchanged, swarm edits the manifest only, and relay modifies `src/lib.rs` at code anchors after the header. Receipt schemas record preparation provenance; actual prepared trees and receipts were not independently checked in this investigation. The collector now recognizes only these exact path package versions with MIT declarations, requires the pinned header and following `//!`, and preserves the original bytes. Other identities and missing or altered evidence remain fail-closed. Regression cases cover all four headers and identity and content mutations; they were not run locally. CI success and actual prepared-source evidence remain unverified, and the collector does not prove archive provenance or legal compliance.
+
 ## Local Linux execution and allowlist decision (2026-10-28)
 
 The paragraphs above describe the change as authored. With explicit owner permission, the gate was then executed locally on Linux (Rust 1.99.1) after merging into `develop`; Windows was not exercised and the GitHub Actions report/upload wiring was not run. The regression suites passed (28 tests). `install` downloaded the Linux musl archive, verified its pinned SHA-256 and extracted the binary with the assumed layout. `report` produced all twelve expected files, including the six product preparation receipts.

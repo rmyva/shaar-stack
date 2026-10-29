@@ -241,31 +241,42 @@ class NoticeEvidenceTests(unittest.TestCase):
                   b'// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\n'
                   b'// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\n'
                   b'// DEALINGS IN THE SOFTWARE.\n\n')
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            _, metadata, sources, source = self.fixture(root, False)
-            data = json.loads(metadata.read_text(encoding="utf-8"))
-            data["packages"][0].update(name="libp2p-dns", version="0.45.0", source=None, license="MIT")
-            metadata.write_text(json.dumps(data), encoding="utf-8")
-            src = source / "src"
-            src.mkdir()
-            lib = src / "lib.rs"
-            lib.write_bytes(header + b'//! docs\nmodified code')
-            entry = collector.collect(metadata, sources)[0]["entries"][0]
-            material = next(item for item in entry["materials"] if item["kind"] == "license")
-            self.assertEqual(bytes.fromhex(material["bytes_hex"]), header)
-            self.assertEqual(material["byte_range"], [0, len(header)])
-            lib.write_bytes(header[:-2] + b'x\n//! docs')
-            with self.assertRaisesRegex(collector.EvidenceError, "header missing or changed"):
-                collector.collect(metadata, sources)
-            lib.unlink()
-            with self.assertRaises(collector.EvidenceError):
-                collector.collect(metadata, sources)
-            data["packages"][0]["name"] = "other"
-            metadata.write_text(json.dumps(data), encoding="utf-8")
-            lib.write_bytes(header + b'//! docs')
-            with self.assertRaisesRegex(collector.EvidenceError, "no license evidence"):
-                collector.collect(metadata, sources)
+        for name, version, reviewed_header in (
+            ("libp2p-dns", "0.45.0", header),
+            ("libp2p-kad", "0.49.0", header),
+            ("libp2p-swarm", "0.48.0", header.replace(b"Copyright 2018", b"Copyright 2019")),
+            ("libp2p-relay", "0.22.0", header.replace(b"Copyright 2018 Parity Technologies (UK) Ltd.\n", b"Copyright 2019 Parity Technologies (UK) Ltd.\n// Copyright 2021 Protocol Labs.\n")),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                _, metadata, sources, source = self.fixture(root, False)
+                data = json.loads(metadata.read_text(encoding="utf-8"))
+                data["packages"][0].update(name=name, version=version, source=None, license="MIT")
+                metadata.write_text(json.dumps(data), encoding="utf-8")
+                src = source / "src"
+                src.mkdir()
+                lib = src / "lib.rs"
+                lib.write_bytes(reviewed_header + b'//! docs\nmodified code')
+                entry = collector.collect(metadata, sources)[0]["entries"][0]
+                material = next(item for item in entry["materials"] if item["kind"] == "license")
+                self.assertEqual(bytes.fromhex(material["bytes_hex"]), reviewed_header)
+                self.assertEqual(material["byte_range"], [0, len(reviewed_header)])
+                lib.write_bytes(reviewed_header[:-2] + b'x\n//! docs')
+                with self.assertRaisesRegex(collector.EvidenceError, "header missing or changed"):
+                    collector.collect(metadata, sources)
+                lib.write_bytes(reviewed_header + b'not docs')
+                with self.assertRaisesRegex(collector.EvidenceError, "header missing or changed"):
+                    collector.collect(metadata, sources)
+                lib.unlink()
+                with self.assertRaises(collector.EvidenceError):
+                    collector.collect(metadata, sources)
+                lib.write_bytes(reviewed_header + b'//! docs')
+                for field, value in (("name", "other"), ("version", "0.0.0"), ("source", "registry+https://example.invalid"), ("license", "Apache-2.0")):
+                    changed = json.loads(json.dumps(data))
+                    changed["packages"][0][field] = value
+                    metadata.write_text(json.dumps(changed), encoding="utf-8")
+                    with self.assertRaisesRegex(collector.EvidenceError, "no license evidence"):
+                        collector.collect(metadata, sources)
 
     def test_missing_license_or_source_map_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:

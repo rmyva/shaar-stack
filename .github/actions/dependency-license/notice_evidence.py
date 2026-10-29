@@ -21,9 +21,13 @@ MAX_SOURCE_DIRECTORIES = 20_000
 MAX_SOURCE_DEPTH = 64
 MAX_COLLECTED_BYTES = 64 * 1024 * 1024
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
-# Exact leading source bytes in the reviewed libp2p-dns 0.45.0 archive.
-DNS_HEADER_BYTES = 1124
-DNS_HEADER_SHA256 = "22375f95ada42f478cc29687320886b83f0d59971ac6968755c12f6d95e207ca"
+# Exact leading source bytes from the independently reviewed crate archives.
+EMBEDDED_HEADERS = {
+    ("libp2p-dns", "0.45.0", None, "MIT"): (1124, "22375f95ada42f478cc29687320886b83f0d59971ac6968755c12f6d95e207ca"),
+    ("libp2p-kad", "0.49.0", None, "MIT"): (1124, "22375f95ada42f478cc29687320886b83f0d59971ac6968755c12f6d95e207ca"),
+    ("libp2p-swarm", "0.48.0", None, "MIT"): (1124, "807a93f76384e2cd0d26a180975c1064a1365a5ec3c9ea207bf813a188a1e6f4"),
+    ("libp2p-relay", "0.22.0", None, "MIT"): (1157, "dcb5d7853eed00c1c60b6a4ebe37222ca3dcc2409cb34c3dcc4d938cc50b4a87"),
+}
 
 
 class EvidenceError(ValueError):
@@ -269,17 +273,17 @@ def collect(metadata_path: Path, source_map_path: Path, selected_ids: set[str] |
                 collected_bytes += material["size"]
                 material["kind"] = "license"
                 files.append(material)
-        # This one reviewed package carries its license in a source header, not a
-        # license-named file. Retain the exact prefix, pinned independently of the
-        # prepared code following it; never treat arbitrary source as a license.
-        if (package["name"], package["version"], package.get("source"), license_expression) == ("libp2p-dns", "0.45.0", None, "MIT"):
+        # Only exact reviewed identities and byte ranges; arbitrary source is not evidence.
+        header_spec = EMBEDDED_HEADERS.get((package["name"], package["version"], package.get("source"), license_expression))
+        if header_spec is not None:
+            header_size, header_digest = header_spec
             header_path = root / "src" / "lib.rs"
             _check_chain(header_path)
             material = _read_material(header_path, root, min(MAX_COLLECTED_BYTES - collected_bytes, MAX_FILE_BYTES))
             data = bytes.fromhex(material["bytes_hex"])
-            header = data[:DNS_HEADER_BYTES]
-            if len(header) != DNS_HEADER_BYTES or _digest(header) != DNS_HEADER_SHA256 or not data[DNS_HEADER_BYTES:].startswith(b"//!"):
-                raise EvidenceError("reviewed DNS embedded license header missing or changed")
+            header = data[:header_size]
+            if len(header) != header_size or _digest(header) != header_digest or not data[header_size:].startswith(b"//!"):
+                raise EvidenceError("reviewed embedded license header missing or changed")
             if collected_bytes + len(header) > MAX_COLLECTED_BYTES:
                 raise EvidenceError("total collected material exceeds size limit")
             collected_bytes += len(header)
