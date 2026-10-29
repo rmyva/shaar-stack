@@ -21,6 +21,9 @@ MAX_SOURCE_DIRECTORIES = 20_000
 MAX_SOURCE_DEPTH = 64
 MAX_COLLECTED_BYTES = 64 * 1024 * 1024
 MAX_MANIFEST_BYTES = 128 * 1024 * 1024
+# Exact leading source bytes in the reviewed libp2p-dns 0.45.0 archive.
+DNS_HEADER_BYTES = 1124
+DNS_HEADER_SHA256 = "22375f95ada42f478cc29687320886b83f0d59971ac6968755c12f6d95e207ca"
 
 
 class EvidenceError(ValueError):
@@ -266,6 +269,23 @@ def collect(metadata_path: Path, source_map_path: Path, selected_ids: set[str] |
                 collected_bytes += material["size"]
                 material["kind"] = "license"
                 files.append(material)
+        # This one reviewed package carries its license in a source header, not a
+        # license-named file. Retain the exact prefix, pinned independently of the
+        # prepared code following it; never treat arbitrary source as a license.
+        if (package["name"], package["version"], package.get("source"), license_expression) == ("libp2p-dns", "0.45.0", None, "MIT"):
+            header_path = root / "src" / "lib.rs"
+            _check_chain(header_path)
+            material = _read_material(header_path, root, min(MAX_COLLECTED_BYTES - collected_bytes, MAX_FILE_BYTES))
+            data = bytes.fromhex(material["bytes_hex"])
+            header = data[:DNS_HEADER_BYTES]
+            if len(header) != DNS_HEADER_BYTES or _digest(header) != DNS_HEADER_SHA256 or not data[DNS_HEADER_BYTES:].startswith(b"//!"):
+                raise EvidenceError("reviewed DNS embedded license header missing or changed")
+            if collected_bytes + len(header) > MAX_COLLECTED_BYTES:
+                raise EvidenceError("total collected material exceeds size limit")
+            collected_bytes += len(header)
+            files.append({"path": "src/lib.rs", "kind": "license", "sha256": _digest(header),
+                          "size": len(header), "bytes_hex": header.hex(),
+                          "byte_range": [0, len(header)]})
         files.sort(key=lambda f: f["path"].encode("utf-8"))
         if not any(f["kind"] == "license" and f["size"] > 0 for f in files):
             raise EvidenceError(f"no license evidence for {package_id}")

@@ -221,6 +221,52 @@ class NoticeEvidenceTests(unittest.TestCase):
             self.assertFalse((root / "failed.json").exists())
             self.assertEqual(list(root.glob(".notice-evidence-*")), [])
 
+    def test_reviewed_dns_embedded_header_is_required_and_verbatim(self):
+        header = (b'// Copyright 2018 Parity Technologies (UK) Ltd.\n'
+                  b'//\n'
+                  b'// Permission is hereby granted, free of charge, to any person obtaining a\n'
+                  b'// copy of this software and associated documentation files (the "Software"),\n'
+                  b'// to deal in the Software without restriction, including without limitation\n'
+                  b'// the rights to use, copy, modify, merge, publish, distribute, sublicense,\n'
+                  b'// and/or sell copies of the Software, and to permit persons to whom the\n'
+                  b'// Software is furnished to do so, subject to the following conditions:\n'
+                  b'//\n'
+                  b'// The above copyright notice and this permission notice shall be included in\n'
+                  b'// all copies or substantial portions of the Software.\n'
+                  b'//\n'
+                  b'// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n'
+                  b'// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n'
+                  b'// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n'
+                  b'// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n'
+                  b'// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING\n'
+                  b'// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\n'
+                  b'// DEALINGS IN THE SOFTWARE.\n\n')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _, metadata, sources, source = self.fixture(root, False)
+            data = json.loads(metadata.read_text(encoding="utf-8"))
+            data["packages"][0].update(name="libp2p-dns", version="0.45.0", source=None, license="MIT")
+            metadata.write_text(json.dumps(data), encoding="utf-8")
+            src = source / "src"
+            src.mkdir()
+            lib = src / "lib.rs"
+            lib.write_bytes(header + b'//! docs\nmodified code')
+            entry = collector.collect(metadata, sources)[0]["entries"][0]
+            material = next(item for item in entry["materials"] if item["kind"] == "license")
+            self.assertEqual(bytes.fromhex(material["bytes_hex"]), header)
+            self.assertEqual(material["byte_range"], [0, len(header)])
+            lib.write_bytes(header[:-2] + b'x\n//! docs')
+            with self.assertRaisesRegex(collector.EvidenceError, "header missing or changed"):
+                collector.collect(metadata, sources)
+            lib.unlink()
+            with self.assertRaises(collector.EvidenceError):
+                collector.collect(metadata, sources)
+            data["packages"][0]["name"] = "other"
+            metadata.write_text(json.dumps(data), encoding="utf-8")
+            lib.write_bytes(header + b'//! docs')
+            with self.assertRaisesRegex(collector.EvidenceError, "no license evidence"):
+                collector.collect(metadata, sources)
+
     def test_missing_license_or_source_map_fails_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
