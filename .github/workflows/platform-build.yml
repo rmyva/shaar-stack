@@ -1,0 +1,116 @@
+# Manual platform build evidence for the two products. Build-only: nothing is
+# executed, packaged, or released. Reuses the repository's pinned prepare-sources machinery.
+name: Platform build evidence
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: platform-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Release build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RUSTUP_TOOLCHAIN: "1.99.1"
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            android: true
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+      - name: Install Rust 1.99.1 and the build target
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add ${{ matrix.target }}
+          rustc --version --verbose
+          cargo --version
+          rustup show
+      - name: Select the preinstalled Android NDK toolchain
+        if: matrix.android
+        run: |
+          set -euo pipefail
+          ndk=""
+          for candidate in "$ANDROID_NDK_LATEST_HOME" "$ANDROID_NDK_ROOT" "$ANDROID_NDK_HOME"; do
+            if [ -n "$candidate" ] && [ -d "$candidate" ]; then ndk="$candidate"; break; fi
+          done
+          if [ -z "$ndk" ]; then
+            echo "No preinstalled Android NDK found in ANDROID_NDK_LATEST_HOME, ANDROID_NDK_ROOT, ANDROID_NDK_HOME" >&2
+            exit 1
+          fi
+          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          clang="$bin/aarch64-linux-android24-clang"
+          if [ ! -f "$clang" ]; then
+            echo "Android NDK clang wrapper is missing: $clang" >&2
+            exit 1
+          fi
+          {
+            echo "NDK_ROOT=$ndk"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$clang"
+            echo "CC_AARCH64_LINUX_ANDROID=$clang"
+            echo "CXX_AARCH64_LINUX_ANDROID=$bin/aarch64-linux-android24-clang++"
+            echo "AR_AARCH64_LINUX_ANDROID=$bin/llvm-ar"
+          } >> "$GITHUB_ENV"
+          if [ -f "$ndk/source.properties" ]; then cat "$ndk/source.properties"; fi
+          "$clang" --version
+      - name: Prepare current reviewed product sources without lock generation
+        uses: ./.github/actions/prepare-sources
+        with:
+          selection: '{"relay": false, "dns": false, "resolver": false, "kad": false}'
+          resolve_only: "false"
+      - name: Build release products for ${{ matrix.target }}
+        run: python -I .github/ci/run.py platform-build ${{ matrix.target }}
+      - name: Write the build-only evidence summary
+        if: always()
+        run: |
+          python -I - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+          target = "${{ matrix.target }}"
+          manifest = Path("target/platform-build") / target / "manifest.json"
+          lines = ["## Platform build: " + target, "", "Build-only evidence: the executables were compiled for this target; they were not executed in CI, not packaged, and not verified on any device.", ""]
+          if manifest.is_file():
+              data = json.loads(manifest.read_text(encoding="utf-8"))
+              lines.append("Toolchain: " + data["toolchain"].splitlines()[0])
+              lines.append("Source revision: " + data["source_revision"])
+              lines.append("")
+              lines.append("| Product | SHA-256 | Bytes |")
+              lines.append("|---|---|---|")
+              for name in sorted(data["products"]):
+                  item = data["products"][name]
+                  lines.append("| " + name + " | " + item["sha256"] + " | " + str(item["bytes"]) + " |")
+          else:
+              lines.append("No manifest was recorded: the build failed before a manifest was written; see the build step log for the compiler diagnostics.")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          PYTHON
+      - name: Upload the target build evidence
+        if: always() && success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: platform-build-${{ matrix.target }}
+          path: target/platform-build/${{ matrix.target }}/
+          retention-days: 7
+          if-no-files-found: error
